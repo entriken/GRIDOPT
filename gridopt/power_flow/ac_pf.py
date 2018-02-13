@@ -77,8 +77,8 @@ class ACPF(PFmethod):
 
         # Parameters
         params = self._parameters
-        wm = params['weight_vang']
-        wa = params['weight_vmag']
+        wm = params['weight_vmag']
+        wa = params['weight_vang']
         wp = params['weight_pq']
         wt = params['weight_t']
         wb = params['weight_b']
