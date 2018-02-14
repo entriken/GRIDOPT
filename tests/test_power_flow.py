@@ -108,6 +108,48 @@ class TestPowerFlow(unittest.TestCase):
             self.assertTrue(results['solver name'] in ['mumps','superlu'])
             self.assertTrue(isinstance(results['network snapshot'], pf.Network))
 
+    def test_ACPF_nr_heuristics(self):
+
+        for case in utils.test_cases:
+
+            net = pf.Parser(case).parse(case)
+
+            for Q_par in ['range', 'fraction']:
+
+                method = gopt.power_flow.new_method('ACPF')
+                method.set_parameters(params={'solver': 'nr',
+                                              'quiet': True})
+                method.solve(net)
+
+                results = method.get_results()
+
+                net_snap = results['network snapshot']
+                self.assertLess(np.abs(net_snap.bus_P_mis), 1e-2) # MW
+                self.assertLess(np.abs(net_snap.bus_Q_mis), 1e-2) # MVAr
+
+                eps = 1e-4
+                for bus in net_snap.buses:
+                    if bus.is_regulated_by_gen() and not bus.is_slack():
+                        for gen in bus.reg_generators:
+                            self.assertLessEqual(gen.Q, gen.Q_max+1e-10)
+                            self.assertGreaterEqual(gen.Q, gen.Q_min-1e-10)
+                        if np.abs(bus.v_mag-bus.v_set) < eps: # v at set
+                            Qtotal = 0.
+                            norm = 0.
+                            for gen in bus.reg_generators:
+                                if np.abs(gen.Q-gen.Q_max) > eps and np.abs(gen.Q-gen.Q_min) > eps:
+                                    Qtotal += gen.Q
+                                    norm += gen.Q_par
+                            for gen in bus.reg_generators:
+                                if np.abs(gen.Q-gen.Q_max) > eps and np.abs(gen.Q-gen.Q_min) > eps:
+                                    self.assertLess(np.abs(gen.Q-gen.Q_par*Qtotal/norm), eps)
+                        else: # v not at set
+                            num = 0
+                            for gen in bus.reg_generators:
+                                if np.abs(gen.Q-gen.Q_max) <= eps or np.abs(gen.Q-gen.Q_min) <= eps:
+                                    num += 1
+                            self.assertGreaterEqual(num, 1)                                
+                                
     def test_ACPF_solutions(self):
 
         print('')

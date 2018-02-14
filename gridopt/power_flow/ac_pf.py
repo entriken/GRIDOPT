@@ -8,6 +8,7 @@
 
 from __future__ import print_function
 import time
+import pfnet
 import numpy as np
 from .method_error import *
 from .method import PFmethod
@@ -20,20 +21,21 @@ class ACPF(PFmethod):
 
     name = 'ACPF'
     
-    _parameters = {'weight_vmag': 1e0,  # weight for reg voltage magnitude penalty
-                   'weight_vang': 1e0,  # weight for angle difference penalty
-                   'weight_pq': 1e-3,   # weight for gen powers penalty
-                   'weight_t': 1e-3,    # weight for tap ratios penalty
-                   'weight_b': 1e-3,    # weight for shunt susceptances penalty
-                   'limit_gens': True,  # flag for enforcing generator reactive power limits
-                   'lock_taps': True,   # flag for locking transformer tap ratios
-                   'lock_shunts': True, # flag for locking swtiched shunts
-                   'tap_step': 0.5,     # tap ratio acceleration factor (NR only)
-                   'shunt_step': 0.5,   # susceptance acceleration factor (NR only)
-                   'dtap': 1e-5,        # tap ratio perturbation (NR only)
-                   'dsus': 1e-5,        # susceptance perturbation (NR only)
-                   'vmin_thresh': 0.1,  # threshold for vmin
-                   'solver': 'augl'}    # OPTALG optimization solver (augl, ipopt, nr, inlp)
+    _parameters = {'weight_vmag': 1e0,         # weight for reg voltage magnitude penalty
+                   'weight_vang': 1e0,         # weight for angle difference penalty
+                   'weight_pq': 1e-3,          # weight for gen powers penalty
+                   'weight_t': 1e-3,           # weight for tap ratios penalty
+                   'weight_b': 1e-3,           # weight for shunt susceptances penalty
+                   'limit_gens': True,         # flag for enforcing generator reactive power limits
+                   'lock_taps': True,          # flag for locking transformer tap ratios
+                   'lock_shunts': True,        # flag for locking swtiched shunts
+                   'tap_step': 0.5,            # tap ratio acceleration factor (NR only)
+                   'shunt_step': 0.5,          # susceptance acceleration factor (NR only)
+                   'dtap': 1e-5,               # tap ratio perturbation (NR only)
+                   'dsus': 1e-5,               # susceptance perturbation (NR only)
+                   'pvpq_start_k': 0,          # start iteration number for PVPQ switching heuristics
+                   'vmin_thresh': 0.1,         # threshold for vmin
+                   'solver': 'augl'}           # OPTALG optimization solver (augl, ipopt, nr, inlp)
 
     _parameters_augl = {'feastol' : 1e-4,
                         'optol' : 1e-4,
@@ -136,6 +138,7 @@ class ACPF(PFmethod):
                 if not lock_shunts:
                     num_vars += net.get_num_switched_shunts()*net.num_periods
                 assert(net.num_vars == num_vars)
+                assert(net.num_bounded == 0)
                 if limit_gens:
                     assert(net.num_fixed == 0)
                 else:
@@ -145,29 +148,27 @@ class ACPF(PFmethod):
             
             # Set up problem
             problem = pfnet.Problem(net)
-            problem.add_constraint(pfnet.Constraint('AC power balance',net))
-            problem.add_constraint(pfnet.Constraint('generator active power participation',net))
-            problem.add_constraint(pfnet.Constraint('generator reactive power participation',net))
+            problem.add_constraint(pfnet.Constraint('AC power balance', net))
             problem.add_function(pfnet.Function('voltage magnitude regularization',
-                                                wm/max([net.num_buses,1.]),net))
+                                                wm/max([net.num_buses,1.]), net))
             problem.add_function(pfnet.Function('voltage angle regularization',
                                                 wa/max([net.num_buses,1.]),net))
             problem.add_function(pfnet.Function('generator powers regularization',
-                                                wp/max([net.num_generators,1.]),net))
+                                                wp/max([net.num_generators,1.]), net))
             if limit_gens:
-                problem.add_constraint(pfnet.Constraint('voltage regulation by generators',net))
+                problem.add_constraint(pfnet.Constraint('voltage regulation by generators', net))
             else:
-                problem.add_constraint(pfnet.Constraint('variable fixing',net))
+                problem.add_constraint(pfnet.Constraint('variable fixing', net))
             if not lock_taps:
-                problem.add_constraint(pfnet.Constraint('voltage regulation by transformers',net))
+                problem.add_constraint(pfnet.Constraint('voltage regulation by transformers', net))
                 problem.add_function(pfnet.Function('tap ratio regularization',
-                                                    wt/max([net.get_num_tap_changers_v(),1.]),net))
+                                                    wt/max([net.get_num_tap_changers_v(),1.]), net))
             if not lock_shunts:
-                problem.add_constraint(pfnet.Constraint('voltage regulation by shunts',net))
+                problem.add_constraint(pfnet.Constraint('voltage regulation by shunts', net))
                 problem.add_function(pfnet.Function('susceptance regularization',
-                                                    wb/max([net.get_num_switched_shunts(),1.]),net))
+                                                    wb/max([net.get_num_switched_shunts(),1.]), net))
             problem.analyze()
-        
+            
             # Return
             return problem
 
@@ -180,10 +181,6 @@ class ACPF(PFmethod):
                           'variable',
                           'not slack',
                           ['voltage magnitude','voltage angle'])
-            net.set_flags('bus',
-                          'fixed',
-                          'regulated by generator',
-                          'voltage magnitude')
 
             # Gen active powers
             net.set_flags('generator',
@@ -215,8 +212,7 @@ class ACPF(PFmethod):
                                         net.get_num_reg_gens() +
                                         net.get_num_tap_changers_v() +
                                         net.get_num_switched_shunts())*net.num_periods)
-                assert(net.num_fixed == (net.get_num_buses_reg_by_gen() +
-                                         net.get_num_tap_changers_v() +
+                assert(net.num_fixed == (net.get_num_tap_changers_v() +
                                          net.get_num_switched_shunts())*net.num_periods)
             except AssertionError:
                 raise PFmethodError_BadProblem()
@@ -224,9 +220,9 @@ class ACPF(PFmethod):
             # Set up problem
             problem = pfnet.Problem(net)
             problem.add_constraint(pfnet.Constraint('AC power balance',net))
-            problem.add_constraint(pfnet.Constraint('generator active power participation',net))
-            problem.add_constraint(pfnet.Constraint('generator reactive power participation',net))
-            problem.add_constraint(pfnet.Constraint('variable fixing',net))
+            problem.add_constraint(pfnet.Constraint('generator active power participation', net))
+            problem.add_constraint(pfnet.Constraint('PVPQ switching', net))
+            problem.add_constraint(pfnet.Constraint('variable fixing', net))
             if limit_gens:
                 problem.add_heuristic(pfnet.HEUR_TYPE_PVPQ)
             problem.analyze()
@@ -251,7 +247,6 @@ class ACPF(PFmethod):
         vmin_thresh = params['vmin_thresh']
         solver_name = params['solver']
         solver_params = params['solver_parameters']
-        feastol = solver_params['nr']['feastol']
 
         # Opt solver
         if solver_name == 'augl':
@@ -277,7 +272,7 @@ class ACPF(PFmethod):
         # Callbacks
         def c1(s):
             if (s.k != 0 and
-                (not lock_taps) and norm(s.problem.f,np.inf) < 100.*feastol):
+                (not lock_taps) and norm(s.problem.f,np.inf) < 100.*solver_params['nr']['feastol']):
                 try:
                     self.apply_tran_v_regulation(s)
                 except Exception as e:
@@ -285,14 +280,14 @@ class ACPF(PFmethod):
             
         def c2(s):
             if (s.k != 0 and
-                (not lock_shunts) and norm(s.problem.f,np.inf) < 100.*feastol):
+                (not lock_shunts) and norm(s.problem.f,np.inf) < 100.*solver_params['nr']['feastol']):
                 try:
                     self.apply_shunt_v_regulation(s)
                 except Exception as e:
                     raise PFmethodError_ShuntVReg(e)                
 
         def c3(s):
-            if s.k > 0:
+            if s.k >= params['pvpq_start_k']:
                 prob = s.problem.wrapped_problem
                 prob.apply_heuristics(s.x)
                 s.problem.A = prob.A
@@ -361,11 +356,13 @@ class ACPF(PFmethod):
                 if header:
                     print('{0:^5}'.format('vmax'), end=' ')
                     print('{0:^5}'.format('vmin'), end=' ')
-                    print('{0:^8}'.format('gvdev'))
+                    print('{0:^8}'.format('gvdev'), end=' ')
+                    print('{0:^8}'.format('gQvio'))
                 else:
                     print('{0:^5.2f}'.format(np.average(net.bus_v_max)), end=' ')
                     print('{0:^5.2f}'.format(np.average(net.bus_v_min)), end=' ')
-                    print('{0:^8.1e}'.format(np.average(net.gen_v_dev)))
+                    print('{0:^8.1e}'.format(np.average(net.gen_v_dev)), end=' ')
+                    print('{0:^8.1e}'.format(np.average(net.gen_Q_vio)))
             return info_printer
 
         # NR-based
